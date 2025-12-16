@@ -73,12 +73,12 @@ echo_stdout() {
 		if [[ ${quiet_flag:?} -eq 1 ]]; then
 			exec 1>&2
 		fi
-		echo -e "${1:?}"
+		echo -e "${1}"
 	)
 }
 
 echo_stderr() {
-	echo -e "${1:?}" >&2
+	echo -e "${1}" >&2
 }
 
 # Parse command line arguments
