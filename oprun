@@ -163,6 +163,9 @@ if ! env_vars=$($OP_CMD inject -i "$ENV_FILE" 2>/dev/null); then
 	exit 1
 fi
 
+# Remove comment lines (starting with #) and empty lines
+env_vars=$(echo "$env_vars" | sed '/^#/d' | sed '/^$/d')
+
 # Show loaded variables if verbose mode is enabled
 if [[ "$VERBOSE" == "true" ]]; then
 	echo_stdout -e "${GREEN}Loaded environment variables:${NC}"
