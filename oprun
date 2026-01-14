@@ -16,7 +16,6 @@ set -e
 
 # Default values
 ENV_FILE=".env.template"
-SHOW_HELP=false
 
 # Color codes for output (only if terminal supports it)
 if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
@@ -34,37 +33,39 @@ else
 fi
 
 quiet_flag=0
+win_exe_flag=0
 
 # Help message
 show_help() {
-	echo -e "
+  echo -e "
 ${BLUE}oprun${NC} - 1Password inject wrapper (WSL-friendly op run alternative)
 
 ${YELLOW}USAGE:${NC}
-	oprun [OPTIONS] [--] COMMAND [ARGS...]
+  oprun [OPTIONS] [--] COMMAND [ARGS...]
 
 ${YELLOW}OPTIONS:${NC}
-	-e, --env-file FILE   Use specified env file (default: .env.template)
-	-h, --help            Show this help message
-	-v, --verbose         Show loaded environment variables (for debugging)
-	-q, --quiet           Suppress all output to stdout (escaping to stderr)
+  -e, --env-file FILE   Use specified env file (default: .env.template)
+  -h, --help            Show this help message
+  -v, --verbose         Show loaded environment variables (for debugging)
+  -q, --quiet           Suppress all output to stdout (escaping to stderr)
+      --win-exe         Force use of 'op.exe', ignoring the 'op' command
 
 ${YELLOW}EXAMPLES:${NC}
-	oprun npm run start
-	oprun -- docker-compose up
-	oprun -e secrets.env -- python manage.py runserver
-	oprun -v npm run test
+  oprun npm run start
+  oprun -- docker-compose up
+  oprun -e secrets.env -- python manage.py runserver
+  oprun -v npm run test
 
 ${YELLOW}ENV FILE FORMAT:${NC}
-	Create a .env.template file with 1Password secret references:
+  Create a .env.template file with 1Password secret references:
 
-	DATABASE_URL="op://vault-name/item-name/field-name"
-	API_KEY="op://student-services-prod/API Key: External Service/password"
+  DATABASE_URL=op://vault-name/item-name/field-name
+  API_KEY=op://student-services-prod/API Key: External Service/password
 
 ${YELLOW}SETUP:${NC}
-	1. Make sure 1Password CLI is installed and authenticated
-	2. Create a .env.template file in your project
-	3. Run: oprun your-command
+  1. Make sure 1Password CLI is installed and authenticated
+  2. Create a .env.template file in your project
+  3. Run: oprun your-command
 "
 }
 
@@ -101,6 +102,10 @@ while [[ $# -gt 0 ]]; do
 			quiet_flag=1
 			shift
 			;;
+		--win-exe)
+			win_exe_flag=1
+			shift
+			;;
 		--)
 			shift
 			break
@@ -135,9 +140,9 @@ fi
 
 # Check if op CLI is available, with fallback to op.exe (for WSL)
 OP_CMD="op"
-if ! command -v op &> /dev/null; then
-	if command -v op.exe &> /dev/null; then
-		OP_CMD="op.exe"
+if [[ $win_exe_flag -eq 1 ]] || ! command -v op &> /dev/null; then
+	OP_CMD="op.exe"
+	if command -v "${OP_CMD}" &> /dev/null; then
 		echo_stdout "${YELLOW}Using Windows 1Password CLI (op.exe) from WSL${NC}"
 	else
 		echo_stderr "${RED}Error: 1Password CLI not found${NC}"
