@@ -169,8 +169,9 @@ env_vars=$(echo "$env_vars" | sed '/^#/d' | sed '/^$/d')
 # Show loaded variables if verbose mode is enabled
 if [[ "$VERBOSE" == "true" ]]; then
 	echo_stdout -e "${GREEN}Loaded environment variables:${NC}"
-	echo_stdout "$env_vars" | sed 's/=.*/=***/' | sed 's/^/  /'
-	echo_stdout
+	echo "$env_vars" \
+		| sed 's/=.*/=***/' \
+		| sed 's/^/  /' >&2
 fi
 
 echo_stdout -e "${GREEN}Executing command with injected secrets...${NC}"
