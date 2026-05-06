@@ -46,18 +46,20 @@ ${YELLOW}USAGE:${NC}
 ${YELLOW}OPTIONS:${NC}
   -e, --env-file FILE   Use specified env file (default: .env.template)
   -h, --help            Show this help message
+  -s, --sleep SECONDS   Sleep for specified seconds between 'op' commands
   -v, --verbose         Show loaded environment variables (for debugging)
   -q, --quiet           Suppress all output to stdout (escaping to stderr)
-      --win-exe         Force use of 'op.exe', ignoring the 'op' command
+  -w, --win-exe         Force use of 'op.exe', ignoring the 'op' command
 
 ${YELLOW}EXAMPLES:${NC}
   oprun npm run start
   oprun -- docker-compose up
   oprun -e secrets.env -- python manage.py runserver
+  oprun -e secrets.env -s 2 -- sh -c 'podman run -e \"username=\$username\" -e \"password=\$password\" my_image'
   oprun -v npm run test
 
 ${YELLOW}ENV FILE FORMAT:${NC}
-  Create a .env.template file with 1Password secret references:
+  Create a .env.template file with 1Password secret references.  For example:
 
   DATABASE_URL=op://vault-name/item-name/field-name
   API_KEY=op://student-services-prod/API Key: External Service/password
@@ -82,8 +84,39 @@ echo_stderr() {
 	echo -e "${1}" >&2
 }
 
+# Make sure any option that requires an argument has it, and that the argument is not another option
+require_option_arg() {
+	local option_name="$1"
+	local option_value="${2-}"
+
+	if [[ -z "$option_value" ]] || [[ "$option_value" == -* ]]; then
+		echo_stderr "${RED}Error: $option_name requires a value${NC}"
+		exit 1
+	fi
+}
+
+# Sleep for a specified number of seconds between 'op' commands if SLEEP_SECONDS is set
+# Optional first argument: a prefix message (will be printed with ". " before "Sleeping for...")
+# if VERBOSE is true.
+op_sleep() {
+    local prefix_message="${1-}"
+	local sleep_notification
+    if [[ -n "$SLEEP_SECONDS" ]] && [[ "$SLEEP_SECONDS" -gt 0 ]]; then
+        if [[ "$VERBOSE" == "true" ]]; then
+			sleep_notification="Sleeping for $SLEEP_SECONDS $SLEEP_UNIT..."
+            if [[ -n "$prefix_message" ]]; then
+                echo_stdout "${YELLOW}${prefix_message}. ${sleep_notification}${NC}"
+            else
+                echo_stdout "${YELLOW}${sleep_notification}${NC}"
+            fi
+        fi
+        sleep "$SLEEP_SECONDS"
+    fi
+}
+
 # Parse command line arguments
 VERBOSE=false
+SLEEP_SECONDS=""
 while [[ $# -gt 0 ]]; do
 	case $1 in
 		-h|--help)
@@ -91,6 +124,7 @@ while [[ $# -gt 0 ]]; do
 			exit 0
 			;;
 		-e|--env-file)
+			require_option_arg "$1" "${2-}"
 			ENV_FILE="$2"
 			shift 2
 			;;
@@ -102,7 +136,21 @@ while [[ $# -gt 0 ]]; do
 			quiet_flag=1
 			shift
 			;;
-		--win-exe)
+		-s|--sleep)
+			require_option_arg "$1" "${2-}"
+			if [[ ! "$2" =~ ^[0-9]+$ ]]; then
+				echo_stderr "${RED}Error: Please specify an integer for sleep seconds.${NC}"
+				exit 1
+			fi
+			SLEEP_SECONDS="$2"
+			if [[ "$SLEEP_SECONDS" -eq 1 ]]; then
+				SLEEP_UNIT="second"
+			else
+				SLEEP_UNIT="seconds"
+			fi
+			shift 2
+			;;
+		-w|--win-exe)
 			win_exe_flag=1
 			shift
 			;;
@@ -132,9 +180,9 @@ fi
 # Check if env file exists
 if [[ ! -f "$ENV_FILE" ]]; then
 	echo_stderr "${RED}Error: Env file '$ENV_FILE' not found${NC}"
-	echo_stderr "${YELLOW}Create an env file with your 1Password secret references:${NC}"
+	echo_stderr "${YELLOW}Create an env file with your 1Password secret references.  For example:${NC}"
 	echo_stderr 'DATABASE_URL="op://vault-name/item-name/field-name"'
-	echo_stderr 'API_KEY="op://vault-name/item-name/password"'
+	echo_stderr 'API_KEY="op://student-services-prod/API Key: External Service/password"'
 	exit 1
 fi
 
@@ -150,36 +198,55 @@ if [[ $win_exe_flag -eq 1 ]] || ! command -v op &> /dev/null; then
 		echo_stderr "Please install 1Password CLI: https://developer.1password.com/docs/cli/get-started/"
 		exit 1
 	fi
+else
+	echo_stdout "${YELLOW}Using native 1Password CLI command (op)${NC}"
 fi
 
-# Check if user is signed in to 1Password
-if ! $OP_CMD account list &> /dev/null; then
-	echo_stderr "${RED}Error: Not signed in to 1Password${NC}"
-	echo_stderr "Please run: $OP_CMD signin"
-	exit 1
+# Check if user is signed in to 1Password.  If not, attempt to sign in and verify that it worked.
+if ! "$OP_CMD" account list &> /dev/null; then
+    op_sleep "User is not signed in to 1Password"
+    echo_stdout "${YELLOW}Signing in to 1Password ($OP_CMD signin)...${NC}"
+
+    if ! SIGNIN_RESULTS=$("$OP_CMD" signin 2>&1); then
+        echo_stderr "${RED}Error: Failed to sign in to 1Password.${NC}"
+        if [[ -n "$SIGNIN_RESULTS" ]]; then
+            echo_stderr "${RED}$SIGNIN_RESULTS${NC}"
+        fi
+        exit 1
+    fi
+	op_sleep "Verifying 1Password session after signin"
+
+    if ! "$OP_CMD" account list &> /dev/null; then
+        echo_stderr "${RED}Error: Sign-in did not establish an authenticated 1Password session.${NC}"
+        if [[ -n "$SIGNIN_RESULTS" ]]; then
+            echo_stderr "${YELLOW}$SIGNIN_RESULTS${NC}"
+        fi
+        exit 1
+    fi
 fi
+op_sleep "User is signed in to 1Password"
 
 echo_stdout "${BLUE}Loading secrets from $ENV_FILE...${NC}"
 
 # Inject secrets and capture the result
-if ! env_vars=$($OP_CMD inject -i "$ENV_FILE" 2>/dev/null); then
+if ! env_vars=$("$OP_CMD" inject -i "$ENV_FILE" 2>/dev/null); then
 	echo_stderr "${RED}Error: Failed to inject secrets from 1Password${NC}"
 	echo_stderr "Check your env file and 1Password references"
 	exit 1
 fi
 
 # Remove comment lines (starting with #) and empty lines
-env_vars=$(echo "$env_vars" | sed '/^#/d' | sed '/^$/d')
+env_vars=$(sed '/^#/d; /^$/d' <<<"$env_vars")
 
 # Show loaded variables if verbose mode is enabled
 if [[ "$VERBOSE" == "true" ]]; then
-	echo_stdout -e "${GREEN}Loaded environment variables:${NC}"
+	echo_stdout "${GREEN}Loaded environment variables:${NC}"
 	echo "$env_vars" \
 		| sed 's/=.*/=***/' \
 		| sed 's/^/  /' >&2
 fi
 
-echo_stdout -e "${GREEN}Executing command with injected secrets...${NC}"
+echo_stdout "${GREEN}Executing command with injected secrets...${NC}"
 
 # Execute the command with injected environment variables
 # Using a subshell to avoid polluting the current environment
