@@ -186,53 +186,66 @@ if [[ ! -f "$ENV_FILE" ]]; then
 	exit 1
 fi
 
-# Check if op CLI is available, with fallback to op.exe (for WSL)
-OP_CMD="op"
-if [[ $win_exe_flag -eq 1 ]] || ! command -v op &> /dev/null; then
-	OP_CMD="op.exe"
-	if command -v "${OP_CMD}" &> /dev/null; then
-		echo_stdout "${YELLOW}Using Windows 1Password CLI (op.exe) from WSL${NC}"
+# Let's see if we even need op/op.exe.  If $ENV_FILE doesn't contain any op:// references, 
+# we don't need to use the 1Password CLI.
+if ! grep -q 'op://' "$ENV_FILE"; then
+	echo_stdout "${YELLOW}No op:// references found in $ENV_FILE, so no need to run 1Password CLI${NC}"
+	OP_CMD=""
+	# Load variables from $ENV_FILE into $env_vars, preserving the newlines
+	env_vars=$(grep -v '^#' "$ENV_FILE")
+	# echo "$env_vars"
+	# exit
+else
+	# echo_stdout "${YELLOW}op:// references found in $ENV_FILE - using 1Password CLI${NC}"
+
+	# Check if op CLI is available, with fallback to op.exe (for WSL)
+	OP_CMD="op"
+	if [[ $win_exe_flag -eq 1 ]] || ! command -v op &> /dev/null; then
+		OP_CMD="op.exe"
+		if command -v "${OP_CMD}" &> /dev/null; then
+			echo_stdout "${YELLOW}Using Windows 1Password CLI (op.exe) from WSL${NC}"
+		else
+			echo_stderr "${RED}Error: 1Password CLI not found${NC}"
+			echo_stderr "Tried: 'op' and 'op.exe'"
+			echo_stderr "Please install 1Password CLI: https://developer.1password.com/docs/cli/get-started/"
+			exit 1
+		fi
 	else
-		echo_stderr "${RED}Error: 1Password CLI not found${NC}"
-		echo_stderr "Tried: 'op' and 'op.exe'"
-		echo_stderr "Please install 1Password CLI: https://developer.1password.com/docs/cli/get-started/"
+		echo_stdout "${YELLOW}Using native 1Password CLI command (op)${NC}"
+	fi
+
+	# Check if user is signed in to 1Password.  If not, attempt to sign in and verify that it worked.
+	if ! "$OP_CMD" account list &> /dev/null; then
+		op_sleep "User is not signed in to 1Password"
+		echo_stdout "${YELLOW}Signing in to 1Password ($OP_CMD signin)...${NC}"
+
+		if ! SIGNIN_RESULTS=$("$OP_CMD" signin 2>&1); then
+			echo_stderr "${RED}Error: Failed to sign in to 1Password.${NC}"
+			if [[ -n "$SIGNIN_RESULTS" ]]; then
+				echo_stderr "${RED}$SIGNIN_RESULTS${NC}"
+			fi
+			exit 1
+		fi
+		op_sleep "Verifying 1Password session after signin"
+
+		if ! "$OP_CMD" account list &> /dev/null; then
+			echo_stderr "${RED}Error: Sign-in did not establish an authenticated 1Password session.${NC}"
+			if [[ -n "$SIGNIN_RESULTS" ]]; then
+				echo_stderr "${YELLOW}$SIGNIN_RESULTS${NC}"
+			fi
+			exit 1
+		fi
+	fi
+	op_sleep "User is signed in to 1Password"
+
+	echo_stdout "${BLUE}Loading secrets from $ENV_FILE...${NC}"
+
+	# Inject secrets and capture the result
+	if ! env_vars=$("$OP_CMD" inject -i "$ENV_FILE" 2>/dev/null); then
+		echo_stderr "${RED}Error: Failed to inject secrets from 1Password${NC}"
+		echo_stderr "Check your env file and 1Password references"
 		exit 1
 	fi
-else
-	echo_stdout "${YELLOW}Using native 1Password CLI command (op)${NC}"
-fi
-
-# Check if user is signed in to 1Password.  If not, attempt to sign in and verify that it worked.
-if ! "$OP_CMD" account list &> /dev/null; then
-    op_sleep "User is not signed in to 1Password"
-    echo_stdout "${YELLOW}Signing in to 1Password ($OP_CMD signin)...${NC}"
-
-    if ! SIGNIN_RESULTS=$("$OP_CMD" signin 2>&1); then
-        echo_stderr "${RED}Error: Failed to sign in to 1Password.${NC}"
-        if [[ -n "$SIGNIN_RESULTS" ]]; then
-            echo_stderr "${RED}$SIGNIN_RESULTS${NC}"
-        fi
-        exit 1
-    fi
-	op_sleep "Verifying 1Password session after signin"
-
-    if ! "$OP_CMD" account list &> /dev/null; then
-        echo_stderr "${RED}Error: Sign-in did not establish an authenticated 1Password session.${NC}"
-        if [[ -n "$SIGNIN_RESULTS" ]]; then
-            echo_stderr "${YELLOW}$SIGNIN_RESULTS${NC}"
-        fi
-        exit 1
-    fi
-fi
-op_sleep "User is signed in to 1Password"
-
-echo_stdout "${BLUE}Loading secrets from $ENV_FILE...${NC}"
-
-# Inject secrets and capture the result
-if ! env_vars=$("$OP_CMD" inject -i "$ENV_FILE" 2>/dev/null); then
-	echo_stderr "${RED}Error: Failed to inject secrets from 1Password${NC}"
-	echo_stderr "Check your env file and 1Password references"
-	exit 1
 fi
 
 # Remove comment lines (starting with #) and empty lines
